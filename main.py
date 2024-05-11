@@ -395,7 +395,7 @@ def parse_args():
         "save_steps": 500,
         "total_steps": 20000,
         "early_stop": 6,
-        "pretrained_path": "model-pretrained.ckpt",  # 可以设置为预先训练好的模型路径
+        "pretrained_path": "model-pretrained-0.88.ckpt",  # 可以设置为预先训练好的模型路径
     }
     return config
 
