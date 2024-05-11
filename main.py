@@ -265,6 +265,7 @@ import torch
 import torch.nn as nn
 from torch.optim import AdamW
 from torch.utils.data import DataLoader
+import numpy as np
 
 def main(
     emg_dir,
@@ -356,22 +357,35 @@ def main(
 
     pbar.close()
 
-    # Plotting
-    plt.figure(figsize=(12, 5))
-    plt.subplot(1, 2, 1)
+    # Plot and save loss
+    plt.figure(figsize=(10, 4))
+#     plt.plot(np.arange(len(train_losses)) * valid_steps, train_losses, label='Train Loss')
     plt.plot(train_losses, label='Train Loss')
-    plt.plot(valid_losses, label='Valid Loss')
-    plt.title('Loss during training')
+    plt.plot(np.arange(len(valid_losses)) * valid_steps, valid_losses, label='Valid Loss')
+    plt.title('Loss during Training')
+    plt.xlabel('Steps')
+    plt.ylabel('Loss')
     plt.legend()
-    plt.subplot(1, 2, 2)
-    plt.plot(train_accuracies, label='Train Accuracy')
-    plt.plot(valid_accuracies, label='Valid Accuracy')
-    plt.title('Accuracy during training')
-    plt.legend()
-    
-    # 保存图像到指定路径
-    plt.savefig(save_path+"/"+"training_plot.png")
+    plt.savefig(save_path + "/loss_plot.png")
     plt.show()
+
+    # Plot and save accuracy
+    plt.figure(figsize=(10, 4))
+#     plt.plot(np.arange(len(train_accuracies)) * valid_steps, train_accuracies, label='Train Accuracy')
+    plt.plot(train_accuracies, label='Train Accuracy')
+    plt.plot(np.arange(len(valid_accuracies)) * valid_steps, valid_accuracies, label='Valid Accuracy')
+    plt.title('Accuracy during Training')
+    plt.xlabel('Steps')
+    plt.ylabel('Accuracy')
+    plt.legend()
+    plt.savefig(save_path + "/accuracy_plot.png")
+    plt.show()
+
+    # Save metrics to files
+    np.savetxt(save_path + "/train_losses.txt", np.array(train_losses))
+    np.savetxt(save_path + "/train_accuracies.txt", np.array(train_accuracies))
+    np.savetxt(save_path + "/valid_losses.txt", np.array(valid_losses))
+    np.savetxt(save_path + "/valid_accuracies.txt", np.array(valid_accuracies))
 
     #回传结果到openi，只有训练任务才能回传
     upload_output()
@@ -393,9 +407,9 @@ def parse_args():
         "valid_steps": 500,
         "warmup_steps": 500,
         "save_steps": 500,
-        "total_steps": 20000,
+        "total_steps": 50000,
         "early_stop": 6,
-        "pretrained_path": "model-pretrained-0.88.ckpt",  # 可以设置为预先训练好的模型路径
+        "pretrained_path": "model-pretrained-0.9185.ckpt",  # 可以设置为预先训练好的模型路径
     }
     return config
 
