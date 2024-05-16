@@ -90,17 +90,43 @@ class FusedDataset(Dataset):
 
 
 # from your_dataset_file import FusedDataset
+from sklearn.model_selection import train_test_split
+import numpy as np
 import torch
-from torch.utils.data import DataLoader, random_split
+from torch.utils.data import DataLoader, Subset
 
-def get_fused_dataloader(emg_dir, imu_dir, batch_size, n_workers):
+def get_fused_dataloader(emg_dir, imu_dir, batch_size, n_workers, random_state=42, fix_val_seed=False):
     dataset = FusedDataset(emg_directory=emg_dir, imu_directory=imu_dir)
     num_classes = dataset.get_num_classes()
-    
-    # Splitting dataset into training and validation sets
-    train_len = int(0.9 * len(dataset))
-    lengths = [train_len, len(dataset) - train_len]
-    train_set, valid_set = random_split(dataset, lengths)
+
+    # Ensure each class has at least 10% samples in the test set and at least one sample
+    labels = dataset.labels.numpy()
+    train_val_indices, test_indices = [], []
+
+    rng = np.random.default_rng(random_state)
+    for label in np.unique(labels):
+        label_indices = np.where(labels == label)[0]
+        test_size = max(1, int(0.1 * len(label_indices)))
+        test_idx = rng.choice(label_indices, size=test_size, replace=False)
+        train_val_idx = np.setdiff1d(label_indices, test_idx)
+
+        test_indices.extend(test_idx)
+        train_val_indices.extend(train_val_idx)
+
+    # Split the remaining data into training and validation sets
+    train_val_labels = labels[train_val_indices]
+    if fix_val_seed:
+        train_val_indices, valid_indices = train_test_split(
+            train_val_indices, test_size=0.1, stratify=train_val_labels, random_state=random_state
+        )
+    else:
+        train_val_indices, valid_indices = train_test_split(
+            train_val_indices, test_size=0.1, stratify=train_val_labels
+        )
+
+    train_set = Subset(dataset, train_val_indices)
+    valid_set = Subset(dataset, valid_indices)
+    test_set = Subset(dataset, test_indices)
 
     train_loader = DataLoader(
         train_set,
@@ -117,8 +143,86 @@ def get_fused_dataloader(emg_dir, imu_dir, batch_size, n_workers):
         drop_last=True,
         pin_memory=True,
     )
+    test_loader = DataLoader(
+        test_set,
+        batch_size=batch_size,
+        num_workers=n_workers,
+        drop_last=True,
+        pin_memory=True,
+    )
 
-    return train_loader, valid_loader, num_classes
+    return train_loader, valid_loader, test_loader, num_classes
+
+
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+class InteractiveAttention(nn.Module):
+    def __init__(self, hidden_dim):
+        super(InteractiveAttention, self).__init__()
+        self.W_emg = nn.Linear(hidden_dim, hidden_dim)
+        self.W_imu = nn.Linear(hidden_dim, hidden_dim)
+        self.v = nn.Linear(hidden_dim, 1, bias=False)
+
+    def forward(self, emg_features, imu_features):
+        emg_transformed = self.W_emg(emg_features)
+        imu_transformed = self.W_imu(imu_features)
+        
+        scores = self.v(torch.tanh(emg_transformed.unsqueeze(2) + imu_transformed.unsqueeze(1))).squeeze(-1)
+        attention_weights = F.softmax(scores, dim=-1)
+        
+        attended_emg = torch.bmm(attention_weights, emg_features)
+        attended_imu = torch.bmm(attention_weights.transpose(1, 2), imu_features)
+        
+        return attended_emg, attended_imu
+
+# 用在模型中的示例
+class SignLanguageModelWithAttention(nn.Module):
+    def __init__(self, num_classes, emg_input_dim=8, imu_input_dim=10, hidden_dim=128, num_heads=2, num_layers=2, feature_dim=128, post_fusion_layers=2):
+        super(SignLanguageModelWithAttention, self).__init__()
+        self.emg_embedding = nn.Linear(emg_input_dim, hidden_dim)
+        self.imu_embedding = nn.Linear(imu_input_dim, hidden_dim)
+        self.emg_transformer = nn.TransformerEncoder(
+            nn.TransformerEncoderLayer(d_model=hidden_dim, nhead=2, dim_feedforward=hidden_dim*4, dropout=0.1, batch_first=True, norm_first=True),
+            num_layers=num_layers
+        )
+        self.imu_transformer = nn.TransformerEncoder(
+            nn.TransformerEncoderLayer(d_model=hidden_dim, nhead=2, dim_feedforward=hidden_dim*4, dropout=0.1, batch_first=True, norm_first=True),
+            num_layers=num_layers
+        )
+
+        self.interactive_attention = InteractiveAttention(hidden_dim)
+
+        self.fusion_transformer = nn.TransformerEncoder(
+            nn.TransformerEncoderLayer(d_model=hidden_dim * 2, nhead=num_heads, dim_feedforward=hidden_dim*4, dropout=0.1, batch_first=True, norm_first=True),
+            num_layers=post_fusion_layers
+        )
+
+        self.fc_dim_reduction = nn.Linear(hidden_dim * 2, feature_dim)
+        self.fc_final = nn.Linear(feature_dim, num_classes)
+        self.dropout = nn.Dropout(0.5)
+
+    def forward(self, emg_data, imu_data):
+        emg_features = self.emg_embedding(emg_data)
+        imu_features = self.imu_embedding(imu_data)
+
+        emg_features = self.emg_transformer(emg_features)
+        imu_features = self.imu_transformer(imu_features)
+
+        attended_emg, attended_imu = self.interactive_attention(emg_features, imu_features)
+
+        emg_pooled = torch.mean(attended_emg, dim=1)
+        imu_pooled = torch.mean(attended_imu, dim=1)
+
+        combined_features = torch.cat((emg_pooled, imu_pooled), dim=1)
+        combined_features = self.fusion_transformer(combined_features.unsqueeze(1)).squeeze(1)
+        reduced_features = self.fc_dim_reduction(combined_features)
+        reduced_features = self.dropout(reduced_features)
+        
+        output = self.fc_final(reduced_features)
+        return output
 
 
 
@@ -283,18 +387,20 @@ def main(
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"[Info]: Use {device} now!")
 
-    train_loader, valid_loader, num_classes = get_fused_dataloader(emg_dir, imu_dir, batch_size, n_workers)
+    train_loader, valid_loader, test_loader, num_classes = get_fused_dataloader(emg_dir, imu_dir, batch_size, n_workers)
     print(f"[Info]: Finish loading data!", flush=True)
 
-    model = SignLanguageModel(num_classes=num_classes).to(device)
+    # model = SignLanguageModel(num_classes=num_classes).to(device)
+    model = SignLanguageModelWithAttention(num_classes=num_classes).to(device)
 
     if pretrained_path:
         model.load_state_dict(torch.load(pretrained_path, map_location=device))
         print("[Info]: Pretrained model loaded!")
 
     criterion = nn.CrossEntropyLoss()
-    optimizer = AdamW(model.parameters(), lr=1e-3)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=total_steps)
+    optimizer = AdamW(model.parameters(), lr=1e-3*8)
+    # scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=total_steps)
+    scheduler = get_cosine_schedule_with_warmup(optimizer, warmup_steps, total_steps)
 
     # Lists to store metrics
     train_losses = []
@@ -402,14 +508,15 @@ def parse_args():
         "emg_dir": emg_data_path,
         "imu_dir": imu_data_path,
         "save_path": save_path,
-        "batch_size": 32,
+        "batch_size": 256,
         "n_workers": 2,
         "valid_steps": 500,
         "warmup_steps": 500,
         "save_steps": 500,
-        "total_steps": 50000,
+        "total_steps": 7500,
         "early_stop": 6,
-        "pretrained_path": "model-pretrained-0.9213.ckpt",  # 可以设置为预先训练好的模型路径
+        "pretrained_path": None
+        # "pretrained_path": "model-pretrained-0.9213.ckpt",  # 可以设置为预先训练好的模型路径
     }
     return config
 
