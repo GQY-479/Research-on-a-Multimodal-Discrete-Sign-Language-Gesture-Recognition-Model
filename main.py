@@ -398,7 +398,7 @@ def main(
         print("[Info]: Pretrained model loaded!")
 
     criterion = nn.CrossEntropyLoss()
-    optimizer = AdamW(model.parameters(), lr=1e-3*8)
+    optimizer = AdamW(model.parameters(), lr=1e-3*4)
     # scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=total_steps)
     scheduler = get_cosine_schedule_with_warmup(optimizer, warmup_steps, total_steps)
 
@@ -508,8 +508,8 @@ def parse_args():
         "emg_dir": emg_data_path,
         "imu_dir": imu_data_path,
         "save_path": save_path,
-        "batch_size": 256,
-        "n_workers": 2,
+        "batch_size": 128,
+        "n_workers": 8,
         "valid_steps": 500,
         "warmup_steps": 500,
         "save_steps": 500,
