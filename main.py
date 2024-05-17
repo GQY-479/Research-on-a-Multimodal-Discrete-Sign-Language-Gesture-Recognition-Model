@@ -155,77 +155,6 @@ def get_fused_dataloader(emg_dir, imu_dir, batch_size, n_workers, random_state=4
 
 
 
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-
-class InteractiveAttention(nn.Module):
-    def __init__(self, hidden_dim):
-        super(InteractiveAttention, self).__init__()
-        self.W_emg = nn.Linear(hidden_dim, hidden_dim)
-        self.W_imu = nn.Linear(hidden_dim, hidden_dim)
-        self.v = nn.Linear(hidden_dim, 1, bias=False)
-
-    def forward(self, emg_features, imu_features):
-        emg_transformed = self.W_emg(emg_features)
-        imu_transformed = self.W_imu(imu_features)
-        
-        scores = self.v(torch.tanh(emg_transformed.unsqueeze(2) + imu_transformed.unsqueeze(1))).squeeze(-1)
-        attention_weights = F.softmax(scores, dim=-1)
-        
-        attended_emg = torch.bmm(attention_weights, emg_features)
-        attended_imu = torch.bmm(attention_weights.transpose(1, 2), imu_features)
-        
-        return attended_emg, attended_imu
-
-# 用在模型中的示例
-class SignLanguageModelWithAttention(nn.Module):
-    def __init__(self, num_classes, emg_input_dim=8, imu_input_dim=10, hidden_dim=128, num_heads=2, num_layers=2, feature_dim=128, post_fusion_layers=2):
-        super(SignLanguageModelWithAttention, self).__init__()
-        self.emg_embedding = nn.Linear(emg_input_dim, hidden_dim)
-        self.imu_embedding = nn.Linear(imu_input_dim, hidden_dim)
-        self.emg_transformer = nn.TransformerEncoder(
-            nn.TransformerEncoderLayer(d_model=hidden_dim, nhead=2, dim_feedforward=hidden_dim*4, dropout=0.1, batch_first=True, norm_first=True),
-            num_layers=num_layers
-        )
-        self.imu_transformer = nn.TransformerEncoder(
-            nn.TransformerEncoderLayer(d_model=hidden_dim, nhead=2, dim_feedforward=hidden_dim*4, dropout=0.1, batch_first=True, norm_first=True),
-            num_layers=num_layers
-        )
-
-        self.interactive_attention = InteractiveAttention(hidden_dim)
-
-        self.fusion_transformer = nn.TransformerEncoder(
-            nn.TransformerEncoderLayer(d_model=hidden_dim * 2, nhead=num_heads, dim_feedforward=hidden_dim*4, dropout=0.1, batch_first=True, norm_first=True),
-            num_layers=post_fusion_layers
-        )
-
-        self.fc_dim_reduction = nn.Linear(hidden_dim * 2, feature_dim)
-        self.fc_final = nn.Linear(feature_dim, num_classes)
-        self.dropout = nn.Dropout(0.5)
-
-    def forward(self, emg_data, imu_data):
-        emg_features = self.emg_embedding(emg_data)
-        imu_features = self.imu_embedding(imu_data)
-
-        emg_features = self.emg_transformer(emg_features)
-        imu_features = self.imu_transformer(imu_features)
-
-        attended_emg, attended_imu = self.interactive_attention(emg_features, imu_features)
-
-        emg_pooled = torch.mean(attended_emg, dim=1)
-        imu_pooled = torch.mean(attended_imu, dim=1)
-
-        combined_features = torch.cat((emg_pooled, imu_pooled), dim=1)
-        combined_features = self.fusion_transformer(combined_features.unsqueeze(1)).squeeze(1)
-        reduced_features = self.fc_dim_reduction(combined_features)
-        reduced_features = self.dropout(reduced_features)
-        
-        output = self.fc_final(reduced_features)
-        return output
-
-
-
 import torch.nn as nn
 
 class SignLanguageModel(nn.Module):
@@ -269,7 +198,34 @@ class SignLanguageModel(nn.Module):
         output = self.fc_final(reduced_features)
         return output
 
+class SignLanguageModelWithLSTM(nn.Module):
+    def __init__(self, num_classes, emg_input_dim=8, imu_input_dim=10, hidden_dim=128, num_heads=2, num_layers=1, feature_dim=128, post_fusion_layers=1):
+        super(SignLanguageModelWithLSTM, self).__init__()
+        
+        self.emg_lstm = nn.LSTM(emg_input_dim, hidden_dim, batch_first=True)
+        self.imu_lstm = nn.LSTM(imu_input_dim, hidden_dim, batch_first=True)
 
+        self.fusion_transformer = nn.TransformerEncoder(
+            nn.TransformerEncoderLayer(d_model=hidden_dim * 2, nhead=num_heads, dim_feedforward=hidden_dim * 4, batch_first=True),
+            num_layers=post_fusion_layers
+        )
+
+        self.fc_dim_reduction = nn.Linear(hidden_dim * 2, feature_dim)
+        self.fc_final = nn.Linear(feature_dim, num_classes)
+
+    def forward(self, emg_data, imu_data):
+        emg_features, _ = self.emg_lstm(emg_data)
+        imu_features, _ = self.imu_lstm(imu_data)
+
+        emg_pooled = torch.mean(emg_features, dim=1)
+        imu_pooled = torch.mean(imu_features, dim=1)
+
+        combined_features = torch.cat((emg_pooled, imu_pooled), dim=1)
+        combined_features = self.fusion_transformer(combined_features.unsqueeze(1)).squeeze(1)
+        reduced_features = self.fc_dim_reduction(combined_features)
+        
+        output = self.fc_final(reduced_features)
+        return output
 
 import math
 
@@ -391,7 +347,7 @@ def main(
     print(f"[Info]: Finish loading data!", flush=True)
 
     # model = SignLanguageModel(num_classes=num_classes).to(device)
-    model = SignLanguageModelWithAttention(num_classes=num_classes).to(device)
+    model = SignLanguageModelWithLSTM(num_classes=num_classes).to(device)
 
     if pretrained_path:
         model.load_state_dict(torch.load(pretrained_path, map_location=device))
@@ -467,7 +423,7 @@ def main(
     plt.figure(figsize=(10, 4))
 #     plt.plot(np.arange(len(train_losses)) * valid_steps, train_losses, label='Train Loss')
     plt.plot(train_losses, label='Train Loss')
-    plt.plot(np.arange(len(valid_losses)) * valid_steps, valid_losses, label='Valid Loss')
+    plt.plot(np.arange(1, len(valid_losses) + 1) * valid_steps, valid_losses, label='Valid Loss')
     plt.title('Loss during Training')
     plt.xlabel('Steps')
     plt.ylabel('Loss')
@@ -479,7 +435,7 @@ def main(
     plt.figure(figsize=(10, 4))
 #     plt.plot(np.arange(len(train_accuracies)) * valid_steps, train_accuracies, label='Train Accuracy')
     plt.plot(train_accuracies, label='Train Accuracy')
-    plt.plot(np.arange(len(valid_accuracies)) * valid_steps, valid_accuracies, label='Valid Accuracy')
+    plt.plot(np.arange(1, len(valid_accuracies) + 1) * valid_steps, valid_accuracies, label='Valid Accuracy')
     plt.title('Accuracy during Training')
     plt.xlabel('Steps')
     plt.ylabel('Accuracy')
@@ -513,9 +469,9 @@ def parse_args():
         "valid_steps": 500,
         "warmup_steps": 500,
         "save_steps": 500,
-        "total_steps": 7500,
+        "total_steps": 1500,
         "early_stop": 6,
-        "pretrained_path": None
+        "pretrained_path": None,
         # "pretrained_path": "model-pretrained-0.9213.ckpt",  # 可以设置为预先训练好的模型路径
     }
     return config
