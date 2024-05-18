@@ -354,7 +354,7 @@ def main(
         print("[Info]: Pretrained model loaded!")
 
     criterion = nn.CrossEntropyLoss()
-    optimizer = AdamW(model.parameters(), lr=1e-3*4)
+    optimizer = AdamW(model.parameters(), lr=1e-3)
     # scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=total_steps)
     scheduler = get_cosine_schedule_with_warmup(optimizer, warmup_steps, total_steps)
 
@@ -466,11 +466,11 @@ def parse_args():
         "save_path": save_path,
         "batch_size": 128,
         "n_workers": 8,
-        "valid_steps": 500,
-        "warmup_steps": 500,
-        "save_steps": 500,
-        "total_steps": 1500,
-        "early_stop": 6,
+        "valid_steps": 100,
+        "warmup_steps": 200,
+        "save_steps": 100,
+        "total_steps": 20000,
+        "early_stop": 20,
         "pretrained_path": None,
         # "pretrained_path": "model-pretrained-0.9213.ckpt",  # 可以设置为预先训练好的模型路径
     }
