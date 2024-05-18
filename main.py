@@ -471,7 +471,8 @@ def parse_args():
         "save_steps": 100,
         "total_steps": 20000,
         "early_stop": 20,
-        "pretrained_path": None,
+        # "pretrained_path": None,
+        "pretrained_path": "model-lstm-0.9496.ckpt",
         # "pretrained_path": "model-pretrained-0.9213.ckpt",  # 可以设置为预先训练好的模型路径
     }
     return config
